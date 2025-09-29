@@ -1,95 +1,141 @@
 const std = @import("std");
 
+const version: std.SemanticVersion = .{ .major = 1, .minor = 11, .patch = 1 };
+
+const CryptoBackend = enum {
+    auto,
+    openssl,
+    mbedtls,
+    libgcrypt,
+    wincng,
+};
+
 pub fn build(b: *std.Build) void {
+    const upstream = b.dependency("libssh2", .{});
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const libssh2_dep = b.dependency("libssh2", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    const linkage = b.option(std.builtin.LinkMode, "linkage", "Link mode") orelse .static;
+    const strip = b.option(bool, "strip", "Omit debug information");
+    const pic = b.option(bool, "pie", "Produce Position Independent Code");
 
-    const mbedtls_dep = b.dependency("mbedtls", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    const crypto_choice = b.option(CryptoBackend, "crypto-backend", "Crypto backend: auto|openssl|mbedtls|libgcrypt|wincng") orelse .auto;
+    const zlib = b.option(bool, "zlib", "Enable SSH payload compression (links zlib)") orelse false;
 
-    const lib = b.addStaticLibrary(.{
-        .name = "ssh2",
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    lib.addIncludePath(libssh2_dep.path("include"));
-    lib.linkLibrary(mbedtls_dep.artifact("mbedtls"));
-    lib.addCSourceFiles(.{
-        .root = libssh2_dep.path("src"),
-        .flags = &.{},
-        .files = &.{
-            "channel.c",
-            "comp.c",
-            "crypt.c",
-            "hostkey.c",
-            "kex.c",
-            "mac.c",
-            "misc.c",
-            "packet.c",
-            "publickey.c",
-            "scp.c",
-            "session.c",
-            "sftp.c",
-            "userauth.c",
-            "transport.c",
-            "version.c",
-            "knownhost.c",
-            "agent.c",
-            "mbedtls.c",
-            "pem.c",
-            "keepalive.c",
-            "global.c",
-            "blowfish.c",
-            "bcrypt_pbkdf.c",
-            "agent_win.c",
+    const is_windows = target.result.os.tag == .windows;
+    const mbedtls = crypto_choice == .mbedtls;
+    const openssl = (crypto_choice == .auto and !is_windows) or crypto_choice == .openssl;
+    const wincng = (crypto_choice == .auto and is_windows) or crypto_choice == .wincng;
+    const libgcrypt = crypto_choice == .libgcrypt;
+
+    const config_header = b.addConfigHeader(.{
+        .style = .{
+            .cmake = upstream.path("src/libssh2_config_cmake.h.in"),
         },
+        .include_path = "libssh2_config.h",
+    }, .{
+        .LIBSSH2_API = switch (target.result.os.tag) {
+            .windows => "__declspec(dllexport)",
+            else => "",
+        },
+        .LIBSSH2_HAVE_ZLIB = zlib,
+        .HAVE_SYS_UIO_H = !is_windows,
+        .HAVE_WRITEV = !is_windows,
+        .HAVE_SYS_SOCKET_H = !is_windows,
+        .HAVE_NETINET_IN_H = !is_windows,
+        .HAVE_ARPA_INET_H = !is_windows,
+        .HAVE_SYS_TYPES_H = !is_windows,
+        .HAVE_INTTYPES_H = true,
+        .HAVE_STDINT_H = true,
     });
-    lib.installHeader(b.path("config/libssh2_config.h"), "libssh2_config.h");
-    lib.installHeadersDirectory(libssh2_dep.path("include"), ".", .{});
-    lib.defineCMacro("LIBSSH2_MBEDTLS", null);
 
-    if (target.result.os.tag == .windows) {
-        lib.defineCMacro("_CRT_SECURE_NO_DEPRECATE", "1");
-        lib.defineCMacro("HAVE_LIBCRYPT32", null);
-        lib.defineCMacro("HAVE_WINSOCK2_H", null);
-        lib.defineCMacro("HAVE_IOCTLSOCKET", null);
-        lib.defineCMacro("HAVE_SELECT", null);
-        lib.defineCMacro("LIBSSH2_DH_GEX_NEW", "1");
+    const ssh2_lib = b.addLibrary(.{
+        .version = version,
+        .name = "ssh2",
+        .linkage = linkage,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .strip = strip,
+            .pic = pic,
+        }),
+    });
+    b.installArtifact(ssh2_lib);
+    ssh2_lib.installHeadersDirectory(upstream.path("include"), "", .{});
+    ssh2_lib.root_module.addConfigHeader(config_header);
+    ssh2_lib.root_module.addIncludePath(upstream.path("include"));
+    ssh2_lib.root_module.addCMacro("HAVE_CONFIG_H", "1");
+    ssh2_lib.root_module.addCSourceFiles(.{ .files = ssh2_src, .root = upstream.path(""), .flags = ssh2_flags });
 
-        if (target.result.isGnu()) {
-            lib.defineCMacro("HAVE_UNISTD_H", null);
-            lib.defineCMacro("HAVE_INTTYPES_H", null);
-            lib.defineCMacro("HAVE_SYS_TIME_H", null);
-            lib.defineCMacro("HAVE_GETTIMEOFDAY", null);
-        }
-    } else {
-        lib.defineCMacro("HAVE_UNISTD_H", null);
-        lib.defineCMacro("HAVE_INTTYPES_H", null);
-        lib.defineCMacro("HAVE_STDLIB_H", null);
-        lib.defineCMacro("HAVE_SYS_SELECT_H", null);
-        lib.defineCMacro("HAVE_SYS_UIO_H", null);
-        lib.defineCMacro("HAVE_SYS_SOCKET_H", null);
-        lib.defineCMacro("HAVE_SYS_IOCTL_H", null);
-        lib.defineCMacro("HAVE_SYS_TIME_H", null);
-        lib.defineCMacro("HAVE_SYS_UN_H", null);
-        lib.defineCMacro("HAVE_LONGLONG", null);
-        lib.defineCMacro("HAVE_GETTIMEOFDAY", null);
-        lib.defineCMacro("HAVE_INET_ADDR", null);
-        lib.defineCMacro("HAVE_POLL", null);
-        lib.defineCMacro("HAVE_SELECT", null);
-        lib.defineCMacro("HAVE_SOCKET", null);
-        lib.defineCMacro("HAVE_STRTOLL", null);
-        lib.defineCMacro("HAVE_SNPRINTF", null);
-        lib.defineCMacro("HAVE_O_NONBLOCK", null);
+    if (mbedtls) {
+        ssh2_lib.root_module.addCSourceFile(.{ .file = upstream.path("src/mbedtls.c"), .flags = ssh2_flags });
+        ssh2_lib.root_module.addCMacro("LIBSSH2_MBEDTLS", "1");
+        ssh2_lib.linkSystemLibrary("mbedtls");
+        ssh2_lib.linkSystemLibrary("mbedcrypto");
+        ssh2_lib.linkSystemLibrary("mbedx509");
     }
 
-    b.installArtifact(lib);
+    if (openssl) {
+        ssh2_lib.root_module.addCSourceFile(.{ .file = upstream.path("src/openssl.c"), .flags = ssh2_flags });
+        ssh2_lib.root_module.addCMacro("LIBSSH2_OPENSSL", "1");
+        ssh2_lib.linkSystemLibrary("ssl");
+        ssh2_lib.linkSystemLibrary("crypto");
+    }
+
+    if (wincng) {
+        ssh2_lib.root_module.addCSourceFile(.{ .file = upstream.path("src/wincng.c"), .flags = ssh2_flags });
+        ssh2_lib.root_module.addCMacro("LIBSSH2_WINCNG", "1");
+        // Windows system libs (zig handles names)
+        ssh2_lib.linkSystemLibrary("bcrypt");
+        ssh2_lib.linkSystemLibrary("ncrypt");
+    }
+
+    if (libgcrypt) {
+        ssh2_lib.root_module.addCSourceFile(.{ .file = upstream.path("src/libgcrypt.c"), .flags = ssh2_flags });
+        ssh2_lib.root_module.addCMacro("LIBSSH2_LIBGCRYPT", "1");
+        ssh2_lib.linkSystemLibrary("gcrypt");
+    }
+
+    if (zlib) {
+        if (b.systemIntegrationOption("zlib", .{})) {
+            ssh2_lib.root_module.linkSystemLibrary("zlib", .{});
+        } else if (b.lazyDependency("zlib", .{
+            .target = target,
+            .optimize = optimize,
+        })) |zlib_dependency| {
+            ssh2_lib.root_module.linkLibrary(zlib_dependency.artifact("z"));
+        }
+    }
 }
+
+pub const ssh2_src: []const []const u8 = &.{
+    "src/agent.c",
+    "src/bcrypt_pbkdf.c",
+    "src/blowfish.c",
+    "src/chacha.c",
+    "src/channel.c",
+    "src/cipher-chachapoly.c",
+    "src/comp.c",
+    "src/crypt.c",
+    "src/global.c",
+    "src/hostkey.c",
+    "src/keepalive.c",
+    "src/kex.c",
+    "src/knownhost.c",
+    "src/mac.c",
+    "src/misc.c",
+    "src/packet.c",
+    "src/pem.c",
+    "src/poly1305.c",
+    "src/publickey.c",
+    "src/scp.c",
+    "src/session.c",
+    "src/sftp.c",
+    "src/transport.c",
+    "src/userauth.c",
+    "src/userauth_kbd_packet.c",
+    "src/version.c",
+};
+
+pub const ssh2_flags: []const []const u8 = &.{};
