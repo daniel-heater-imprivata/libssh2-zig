@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  validate:
+    runs-on: k8s-docker-runner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install devbox
+        uses: jetify-com/devbox-install-action@v0.11.0
+        with:
+          enable-cache: true
+
+      - name: Validate build
+        run: devbox run test
+
+      - name: Validate cross-compilation
+        run: devbox run test-cross
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Validate version in build.zig.zon
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          BASE_VERSION="${VERSION%%-*}"
+
+          if grep -q "version = \"$BASE_VERSION\"" build.zig.zon; then
+            echo "✓ Version $BASE_VERSION matches build.zig.zon"
+
+            if [[ "$VERSION" == *-* ]]; then
+              BUILD_NUM="${VERSION##*-}"
+              echo "✓ Build number: $BUILD_NUM"
+            else
+              echo "ℹ No build number (initial release)"
+            fi
+          else
+            echo "ERROR: Version mismatch!"
+            echo "Tag version: $BASE_VERSION"
+            echo "build.zig.zon content:"
+            cat build.zig.zon
+            exit 1
+          fi
+
+  create-release:
+    needs: validate
+    runs-on: k8s-docker-runner
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Extract version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        run: |
+          sed -e "s/{{VERSION}}/${{ steps.version.outputs.VERSION }}/g" \
+              -e "s|{{REPO}}|${{ github.repository }}|g" \
+              .github/release-template.md > release-notes.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: Release ${{ steps.version.outputs.VERSION }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

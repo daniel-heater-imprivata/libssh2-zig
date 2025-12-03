@@ -26,16 +26,19 @@ your_exe.linkLibrary(libssh2_dependency.artifact("ssh2"));
 
 ## Build Options
 
-`libssh2` offers a few options which you can control like so:
+Position Independent Code (PIC) can be enabled:
 
 ```zig
 const libssh2_dependency = b.dependency("libssh2", .{
     .target = target,
     .optimize = optimize,
-    .zlib = true, // links to zlib for payload compression if enabled (default=true)
-    .strip = true, // Strip debug information (default=false)
-    .linkage = .static, // Whether to link statically or dynamically (default=static)
-    .@"crypto-backend" = .auto, // auto will to default to wincng on windows, openssl everywhere else. (default=auto)
-    .@"openssl-linkage" = .static, // each dependency's linkage can be configured to static/dynamic linking
+    .pie = true, // Enable Position Independent Code (default=false)
 });
 ```
+
+## Crypto Backends
+
+- **Windows**: WinCNG (native, dynamically linked)
+- **macOS/Linux**: mbedTLS (statically linked)
+
+All crypto dependencies are included - no need to install OpenSSL or other crypto libraries on end-user machines. The resulting binaries are self-contained.

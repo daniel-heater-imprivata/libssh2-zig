@@ -1,0 +1,16 @@
+.{
+    .name = .test_libssh2,
+    .version = "0.0.0",
+    .fingerprint = 0x8bfc3eccd059a0fc,
+    .dependencies = .{
+        .libssh2 = .{
+            .path = "..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "main.zig",
+    },
+}
+

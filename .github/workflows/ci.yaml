@@ -2,35 +2,67 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: [main]
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        zig-version: [master]
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        include:
-          - zig-version: "0.15.1"
-            os: ubuntu-latest
-    runs-on: ${{ matrix.os }}
+  build-and-test:
+    runs-on: k8s-docker-runner
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+      - uses: actions/checkout@v4
         with:
-          version: ${{ matrix.zig-version }}
+          submodules: recursive
 
-      - name: Check Formatting
-        run: zig fmt --ast-check --check .
+      - name: Install devbox
+        uses: jetify-com/devbox-install-action@v0.11.0
+        with:
+          enable-cache: true
 
-      - name: Build
-        run: zig build -Dstrip=true -Dzlib=true --summary all
+      - name: Run tests
+        run: devbox run test
+
+  cross-compile:
+    runs-on: k8s-docker-runner
+    strategy:
+      matrix:
+        target:
+          - x86_64-linux
+          - aarch64-linux
+          - x86_64-macos
+          - aarch64-macos
+          - x86_64-windows
+          - aarch64-windows
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install devbox
+        uses: jetify-com/devbox-install-action@v0.11.0
+        with:
+          enable-cache: true
+
+      - name: Cross-compile for ${{ matrix.target }}
+        run: devbox run -- zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+
+      - name: Cross-compile with PIC
+        run: |
+          devbox run clean
+          devbox run -- zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe -Dpie=true
+
+  test-consumption:
+    runs-on: k8s-docker-runner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install devbox
+        uses: jetify-com/devbox-install-action@v0.11.0
+        with:
+          enable-cache: true
+
+      - name: Build test project
+        working-directory: test-project
+        run: devbox run -- zig build
